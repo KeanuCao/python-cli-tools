@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "portrait-cutout"
+version = "0.1.0"
+description = "人像抠图命令行工具：分离人物与背景、清理边缘发丝，输出透明 PNG"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "rembg",
+    "opencv-python",
+    "pillow",
+    "numpy",
+    "onnxruntime",
+]
+
+[project.scripts]
+portrait-cutout = "cli:main"
+
+[tool.setuptools]
+py-modules = ["core", "cli"]

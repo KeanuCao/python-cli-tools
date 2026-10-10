@@ -21,3 +21,8 @@ dist/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# 本地测试图片及其抠图产物，不入库
+/portrait-cutout/zh.jpg
+/portrait-cutout/zh*.png
+/portrait-cutout/_test_out/
