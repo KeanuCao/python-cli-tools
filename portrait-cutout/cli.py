@@ -134,6 +134,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="边缘羽化 sigma；边缘生硬时用 1.5~2.0（默认 1.0）",
     )
     parser.add_argument(
+        "--smooth-edge",
+        type=float,
+        default=0.0,
+        metavar="SIGMA",
+        help="轮廓平滑强度，抹掉翘起的发绺等大块凸起；0 为不平滑（默认）。"
+        "证件照整理外形常用 100~150，代价是比它细的发丝会一并被抹平",
+    )
+    parser.add_argument(
         "--description",
         action="store_true",
         help="输出本工具的简要说明后退出",
@@ -177,6 +185,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             open_ksize=args.open_ksize,
             erode_iter=args.erode_iter,
             blur_sigma=args.blur_sigma,
+            smooth_edge=args.smooth_edge,
             background=None if args.transparent else args.bg,
         )
     except (FileNotFoundError, ValueError, OSError) as exc:

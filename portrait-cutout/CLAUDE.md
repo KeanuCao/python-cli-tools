@@ -72,8 +72,14 @@ pyinstaller --onefile --collect-all rembg --collect-all onnxruntime cli.py
   - 提取 alpha 通道，调用 `clean_alpha()` 清理发丝
   - 合成原图 RGB + 清理后的 alpha；`background` 为 RGB 三元组时铺底色，为 `None` 时保留透明
   - 输出格式由扩展名决定；透明 + JPEG 会直接抛 `ValueError`
-- `clean_alpha(alpha, threshold, open_ksize, erode_iter, blur_sigma)`
-  - 二值化 → 开运算 → 可选腐蚀 → 高斯羽化
+- `clean_alpha(alpha, threshold, open_ksize, erode_iter, blur_sigma, smooth_edge)`
+  - 二值化 → 开运算 → 可选腐蚀 → 轮廓平滑 → 高斯羽化
+- `smooth_outline(mask, sigma)`
+  - 沿外轮廓做环绕高斯平滑，抹掉翘起的发绺等大块凸起
+  - **只重排轮廓点，不整体腐蚀**，所以头部大小基本不变；这与 `open_ksize` 的
+    无差别削边有本质区别，别把两者混为一谈
+  - `sigma` 约等于能抹平的特征尺度（像素）；要消掉约 100px 的发绺，sigma 需 ≥ 100
+  - 默认 0（不平滑），因为大 sigma 会把细碎发丝一并抹平
 - `composite_on_color(rgba, color)`
   - 按 alpha 把 RGBA 混合到纯色背景，返回 RGB 数组；羽化边缘因此与底色自然过渡
 - `parse_color(value)` / `BACKGROUND_PRESETS` / `BACKGROUND_ALIASES` / `STANDARD_BLUE` / `DEFAULT_BACKGROUND`
@@ -96,6 +102,7 @@ pyinstaller --onefile --collect-all rembg --collect-all onnxruntime cli.py
 | `open_ksize` | 开运算核大小 | 3 | 发丝顽固 → 5 或 7 |
 | `erode_iter` | 额外腐蚀次数 | 0 | 仍有余发 → 1~2 |
 | `blur_sigma` | 边缘羽化 sigma | 1.0 | 边缘生硬 → 1.5~2.0 |
+| `smooth_edge` | 轮廓平滑 sigma | 0（不平滑） | 翘起的发绺 → 100~150；代价是细发丝一并抹平 |
 
 ## 背景色
 

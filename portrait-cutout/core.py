@@ -152,11 +152,51 @@ def get_session(model_name: str = DEFAULT_MODEL):
     return _sessions[model_name]
 
 
+def smooth_outline(mask: np.ndarray, sigma: float) -> np.ndarray:
+    """沿外轮廓做环绕高斯平滑，抹掉头发轮廓上的凸起（翘起的发绺、碎发团）。
+
+    轮廓是一圈闭合的点序列，用首尾相接的高斯核做滑动平均即可把局部凸起
+    抹平。因为只重排轮廓、不整体腐蚀，所以头部大小基本不变——这跟开运算
+    的无差别削边有本质区别（见 README 的说明）。
+
+    sigma 约等于能抹平的特征尺度（像素）：要消掉一撮约 100px 的发绺，
+    sigma 需要给到 100 以上。代价是比它更细的发丝也会一起被抹平，所以
+    默认 0（不平滑）。只处理外轮廓，不动内部空洞。
+    """
+    if sigma <= 0:
+        return mask
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    smoothed = np.zeros_like(mask)
+
+    radius = int(3 * sigma)
+    offsets = np.arange(-radius, radius + 1)
+    kernel = np.exp(-(offsets**2) / (2 * sigma**2))
+    kernel /= kernel.sum()
+
+    for contour in contours:
+        points = contour[:, 0, :].astype(np.float64)
+        count = len(points)
+        if count < len(kernel):
+            # 轮廓太短，平滑没有意义，原样保留
+            cv2.fillPoly(smoothed, [contour], 255)
+            continue
+        # np.take 的 wrap 模式实现首尾相接，convolve 的 valid 模式让长度回到 count
+        wrapped = np.arange(-radius, count + radius)
+        xs = np.convolve(np.take(points[:, 0], wrapped, mode="wrap"), kernel, "valid")
+        ys = np.convolve(np.take(points[:, 1], wrapped, mode="wrap"), kernel, "valid")
+        polygon = np.stack([xs, ys], axis=1).astype(np.int32)
+        cv2.fillPoly(smoothed, [polygon], 255)
+
+    return smoothed
+
+
 def validate_alpha_params(
     threshold: int = 160,
     open_ksize: int = 3,
     erode_iter: int = 0,
     blur_sigma: float = 1.0,
+    smooth_edge: float = 0.0,
 ) -> None:
     """校验后处理参数，非法时抛 ValueError。
 
@@ -171,6 +211,8 @@ def validate_alpha_params(
         raise ValueError(f"erode-iter 不能为负数，收到 {erode_iter}")
     if blur_sigma < 0:
         raise ValueError(f"blur-sigma 不能为负数，收到 {blur_sigma}")
+    if smooth_edge < 0:
+        raise ValueError(f"smooth-edge 不能为负数，收到 {smooth_edge}")
 
 
 def clean_alpha(
@@ -179,10 +221,12 @@ def clean_alpha(
     open_ksize: int = 3,
     erode_iter: int = 0,
     blur_sigma: float = 1.0,
+    smooth_edge: float = 0.0,
 ) -> np.ndarray:
-    """清理 alpha 通道：二值化 → 开运算 → 可选腐蚀 → 高斯羽化。
+    """清理 alpha 通道：二值化 → 开运算 → 可选腐蚀 → 轮廓平滑 → 高斯羽化。
 
-    开运算和腐蚀负责去掉边缘多余发丝，羽化让边界过渡自然。
+    开运算和腐蚀负责去掉边缘多余发丝，轮廓平滑负责抹掉翘起的发绺等大块
+    凸起，羽化让边界过渡自然。
 
     参数：
         alpha       二维 uint8 数组，rembg 分割出的前景置信度
@@ -190,12 +234,13 @@ def clean_alpha(
         open_ksize  开运算核大小，越大去发丝越狠
         erode_iter  额外腐蚀次数，开运算仍去不干净时使用
         blur_sigma  羽化 sigma，0 表示不羽化
+        smooth_edge 轮廓平滑 sigma，0 表示不平滑；见 smooth_outline()
 
     返回同尺寸的 uint8 数组。
     """
     if alpha.ndim != 2:
         raise ValueError(f"alpha 必须是二维数组，收到 shape={alpha.shape}")
-    validate_alpha_params(threshold, open_ksize, erode_iter, blur_sigma)
+    validate_alpha_params(threshold, open_ksize, erode_iter, blur_sigma, smooth_edge)
 
     # 1. 二值化：低于阈值的半透明像素（多为发丝残留）直接判为背景
     _, mask = cv2.threshold(alpha, threshold, 255, cv2.THRESH_BINARY)
@@ -210,7 +255,11 @@ def clean_alpha(
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         mask = cv2.erode(mask, kernel, iterations=erode_iter)
 
-    # 4. 羽化：高斯模糊把硬边变成渐变，避免锯齿状边界
+    # 4. 轮廓平滑：抹掉翘起的发绺这类大块凸起，整理出干净的证件照外形
+    if smooth_edge > 0:
+        mask = smooth_outline(mask, smooth_edge)
+
+    # 5. 羽化：高斯模糊把硬边变成渐变，避免锯齿状边界
     if blur_sigma > 0:
         mask = cv2.GaussianBlur(mask, (0, 0), blur_sigma)
 
@@ -225,6 +274,7 @@ def portrait_cutout(
     open_ksize: int = 3,
     erode_iter: int = 0,
     blur_sigma: float = 1.0,
+    smooth_edge: float = 0.0,
     background: Optional[Tuple[int, int, int]] = STANDARD_BLUE,
 ) -> Path:
     """对人像图片抠图并输出，返回实际写入的路径。
@@ -236,7 +286,7 @@ def portrait_cutout(
     output_path = Path(output_path)
 
     # 先校验参数：分割很贵，参数写错不该等到分割完才报
-    validate_alpha_params(threshold, open_ksize, erode_iter, blur_sigma)
+    validate_alpha_params(threshold, open_ksize, erode_iter, blur_sigma, smooth_edge)
 
     suffix = output_path.suffix.lower()
     if background is None and suffix in (".jpg", ".jpeg"):
@@ -255,7 +305,9 @@ def portrait_cutout(
     rgba = remove(source, session=get_session(model_name), alpha_matting=False)
     alpha = np.asarray(rgba)[:, :, 3]
 
-    cleaned = clean_alpha(alpha, threshold, open_ksize, erode_iter, blur_sigma)
+    cleaned = clean_alpha(
+        alpha, threshold, open_ksize, erode_iter, blur_sigma, smooth_edge
+    )
 
     # 用清理后的 alpha 替换原 alpha，RGB 沿用原图，避免分割过程带来的颜色损失
     cutout = np.dstack([np.asarray(source), cleaned])
